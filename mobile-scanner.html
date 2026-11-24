@@ -1,0 +1,578 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <meta name="theme-color" content="#1e1b4b">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+    <meta name="apple-mobile-web-app-title" content="MathPlickers Cam">
+    <link rel="manifest" href="manifest.json">
+    <title>MathPlickers Mobile Scanner - Quét thẻ học sinh</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <!-- PeerJS để kết nối trực tiếp Điện thoại <-> Máy tính trình chiếu qua Internet/WiFi không cần cài server -->
+    <script src="https://unpkg.com/peerjs@1.5.2/dist/peerjs.min.js"></script>
+    <style>
+        body {
+            background-color: #090d16;
+            color: #f8fafc;
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+            overscroll-behavior: none;
+            user-select: none;
+        }
+        @keyframes laserMove {
+            0% { top: 8%; opacity: 0.3; }
+            50% { top: 92%; opacity: 1; }
+            100% { top: 8%; opacity: 0.3; }
+        }
+        .scan-line {
+            position: absolute;
+            left: 8%;
+            width: 84%;
+            height: 3px;
+            background: linear-gradient(90deg, transparent, #22c55e, #86efac, #22c55e, transparent);
+            box-shadow: 0 0 14px #22c55e;
+            animation: laserMove 2s infinite ease-in-out;
+        }
+        .reticle-corner {
+            position: absolute;
+            width: 26px;
+            height: 26px;
+            border-color: #38bdf8;
+            border-style: solid;
+        }
+    </style>
+</head>
+<body class="h-screen flex flex-col justify-between overflow-hidden">
+
+    <!-- Header Kết nối -->
+    <header class="bg-indigo-950/95 border-b border-indigo-800/80 px-4 py-3 flex items-center justify-between shrink-0 z-20">
+        <div class="flex items-center gap-2.5">
+            <div class="w-9 h-9 rounded-xl bg-blue-600 flex items-center justify-center shadow">
+                <i class="fa-solid fa-qrcode text-white text-lg"></i>
+            </div>
+            <div>
+                <h1 class="font-extrabold text-base leading-tight">Math<span class="text-blue-400">Plickers</span> Cam</h1>
+                <div id="conn-status" class="text-[11px] text-amber-300 flex items-center gap-1.5 font-semibold">
+                    <span class="w-2 h-2 rounded-full bg-amber-400 animate-pulse"></span>
+                    <span>Chưa kết nối máy chiếu</span>
+                </div>
+            </div>
+        </div>
+
+        <div class="flex items-center gap-2">
+            <button id="btn-install-pwa" class="hidden px-2.5 py-1.5 rounded-lg bg-emerald-600 text-white text-xs font-bold shadow">
+                <i class="fa-solid fa-download mr-1"></i>Cài App
+            </button>
+            <button onclick="openPairModal()" class="px-3 py-1.5 rounded-xl bg-blue-600 hover:bg-blue-500 text-white text-xs font-bold shadow flex items-center gap-1.5">
+                <i class="fa-solid fa-link"></i>
+                <span id="pair-btn-label">Kết nối PC</span>
+            </button>
+        </div>
+    </header>
+
+    <!-- Khung Camera Chính -->
+    <main class="relative flex-1 bg-black flex items-center justify-center overflow-hidden">
+        <video id="camera-video" autoplay playsinline muted class="w-full h-full object-cover"></video>
+        <canvas id="cv-canvas" class="hidden"></canvas>
+
+        <!-- Khung ngắm định vị thẻ Plickers vuông ở trung tâm -->
+        <div id="scan-reticle" class="relative w-64 h-64 sm:w-72 sm:h-72 pointer-events-none z-10 flex items-center justify-center">
+            <div class="reticle-corner top-0 left-0 border-t-4 border-l-4 rounded-tl-xl"></div>
+            <div class="reticle-corner top-0 right-0 border-t-4 border-r-4 rounded-tr-xl"></div>
+            <div class="reticle-corner bottom-0 left-0 border-b-4 border-l-4 rounded-bl-xl"></div>
+            <div class="reticle-corner bottom-0 right-0 border-b-4 border-r-4 rounded-br-xl"></div>
+            <div class="scan-line"></div>
+
+            <!-- Hướng dẫn định hướng trên khung ngắm -->
+            <div class="absolute -top-7 bg-black/75 text-sky-300 text-[11px] font-bold px-3 py-0.5 rounded-full border border-sky-500/40">
+                Đưa thẻ Plickers vào giữa khung vuông
+            </div>
+            <div id="live-detect-pill" class="hidden absolute -bottom-9 bg-emerald-600 text-white text-xs font-extrabold px-3.5 py-1 rounded-full shadow-lg">
+                Đang nhận diện...
+            </div>
+        </div>
+
+        <!-- Màn hình chờ bật camera -->
+        <div id="camera-start-overlay" class="absolute inset-0 bg-slate-950/95 z-20 flex flex-col items-center justify-center p-6 text-center">
+            <div class="w-16 h-16 rounded-2xl bg-indigo-900/70 border border-indigo-500/40 flex items-center justify-center mb-4">
+                <i class="fa-solid fa-camera text-3xl text-blue-400"></i>
+            </div>
+            <h2 class="text-lg font-extrabold mb-1">Sẵn sàng quét thẻ học sinh</h2>
+            <p class="text-xs text-slate-400 max-w-xs mb-5">Cho phép truy cập Camera sau để quét tự động mã ma trận 5x5 và hướng xoay A, B, C, D của thẻ học sinh.</p>
+            <button onclick="initCamera()" class="px-6 py-3 rounded-2xl bg-blue-600 hover:bg-blue-500 text-white font-extrabold text-sm shadow-lg flex items-center gap-2">
+                <i class="fa-solid fa-video"></i>
+                <span>Bật Camera Quét Thẻ</span>
+            </button>
+        </div>
+
+        <!-- Nút bật/tắt đèn Flash & Chuyển đổi chế độ quét -->
+        <div class="absolute top-3 right-3 z-10 flex flex-col gap-2">
+            <button onclick="toggleTorch()" id="btn-torch" class="w-10 h-10 rounded-full bg-slate-900/80 border border-slate-700 text-slate-200 flex items-center justify-center shadow" title="Đèn Flash">
+                <i class="fa-solid fa-bolt"></i>
+            </button>
+            <button onclick="toggleAutoScan()" id="btn-autoscan" class="w-10 h-10 rounded-full bg-emerald-600/90 border border-emerald-400 text-white flex items-center justify-center shadow" title="Tự động nhận diện AI">
+                <i class="fa-solid fa-wand-magic-sparkles"></i>
+            </button>
+        </div>
+    </main>
+
+    <!-- Bảng điều khiển phía dưới: Kết quả vừa quét + Ghi nhận nhanh thủ công -->
+    <footer class="bg-slate-900 border-t border-slate-800 p-3.5 shrink-0 z-20 space-y-3">
+        
+        <!-- Thanh trạng thái câu hỏi hiện tại trên máy chiếu -->
+        <div class="flex items-center justify-between text-xs bg-slate-800/90 px-3 py-2 rounded-xl border border-slate-700">
+            <div class="truncate pr-2">
+                <span class="text-slate-400">Đang chiếu:</span>
+                <b id="active-q-title" class="text-white ml-1">Câu 1 (Chờ đồng bộ...)</b>
+            </div>
+            <span id="scanned-badge" class="bg-emerald-500/20 text-emerald-300 border border-emerald-500/30 px-2 py-0.5 rounded-full font-extrabold shrink-0">
+                Đã quét: 0
+            </span>
+        </div>
+
+        <!-- Thanh bấm chốt nhanh dự phòng (Khi ánh sáng lớp quá tối hoặc thẻ bị lóa) -->
+        <div class="flex items-center gap-2">
+            <select id="manual-card-select" class="flex-1 bg-slate-800 border border-slate-700 text-white text-xs font-bold rounded-xl px-2.5 py-2.5 truncate">
+                <!-- Render 1..60 hoặc danh sách lớp đồng bộ từ PC -->
+            </select>
+            <div class="flex items-center gap-1.5 shrink-0">
+                <button onclick="sendScanResult(getSelectedCardNum(), 'A', 'manual')" class="w-10 h-10 rounded-xl bg-blue-600 active:scale-95 font-extrabold text-sm shadow">A</button>
+                <button onclick="sendScanResult(getSelectedCardNum(), 'B', 'manual')" class="w-10 h-10 rounded-xl bg-indigo-600 active:scale-95 font-extrabold text-sm shadow">B</button>
+                <button onclick="sendScanResult(getSelectedCardNum(), 'C', 'manual')" class="w-10 h-10 rounded-xl bg-violet-600 active:scale-95 font-extrabold text-sm shadow">C</button>
+                <button onclick="sendScanResult(getSelectedCardNum(), 'D', 'manual')" class="w-10 h-10 rounded-xl bg-fuchsia-600 active:scale-95 font-extrabold text-sm shadow">D</button>
+            </div>
+        </div>
+
+        <!-- Lịch sử 3 thẻ vừa quét gần nhất -->
+        <div id="recent-scans-bar" class="flex items-center gap-1.5 overflow-x-auto text-[11px] min-h-[24px]">
+            <span class="text-slate-500 italic">Lịch sử quét sẽ hiện tại đây...</span>
+        </div>
+    </footer>
+
+    <!-- Modal Nhập Mã Kết Nối với Máy Tính Trình Chiếu (index.html) -->
+    <div id="pair-modal" class="fixed inset-0 bg-black/80 backdrop-blur-sm z-50 hidden items-center justify-center p-4">
+        <div class="bg-slate-900 border border-slate-700 rounded-2xl w-full max-w-sm p-5 space-y-4">
+            <div class="flex items-center justify-between">
+                <h3 class="font-extrabold text-base text-white flex items-center gap-2">
+                    <i class="fa-solid fa-tower-broadcast text-blue-400"></i> Kết nối với Máy chiếu PC
+                </h3>
+                <button onclick="closePairModal()" class="text-slate-400 hover:text-white"><i class="fa-solid fa-xmark text-lg"></i></button>
+            </div>
+            <p class="text-xs text-slate-300 leading-relaxed">
+                Mở file <b>MathPlickers (index.html)</b> trên máy tính, chọn tab <b>1. Trình chiếu & Quét thẻ</b> -> <b>Camera thật</b> để lấy <b>Mã Phòng 6 ký tự</b> và nhập vào ô dưới:
+            </p>
+            <div>
+                <input type="text" id="room-code-input" maxlength="12" placeholder="Nhập mã phòng (VD: MP-4829)" class="w-full bg-slate-800 border-2 border-blue-500/60 focus:border-blue-400 rounded-xl px-4 py-3 text-center text-lg font-extrabold tracking-widest uppercase text-white focus:outline-none">
+            </div>
+            <div class="flex gap-2">
+                <button onclick="closePairModal()" class="flex-1 py-2.5 rounded-xl bg-slate-800 text-slate-300 text-xs font-bold">Đóng</button>
+                <button onclick="connectToHostRoom()" class="flex-1 py-2.5 rounded-xl bg-blue-600 hover:bg-blue-500 text-white text-xs font-extrabold shadow">Kết nối ngay</button>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        /**
+         * 1. BẢNG MÃ MA TRẬN 5x5 ĐỒNG BỘ 100% VỚI HÀM generatePlickerCardSVG() TRONG index.html
+         */
+        const CARD_PATTERNS = {};
+        function buildCardLookupTable() {
+            for (let cardNum = 1; cardNum <= 60; cardNum++) {
+                const seed = cardNum * 137 + 29;
+                const grid = [];
+                for (let r = 0; r < 5; r++) {
+                    const row = [];
+                    for (let c = 0; c < 5; c++) {
+                        const bit = ((seed >> ((r * 5 + c) % 16)) ^ (r * 3 + c * 7)) & 1;
+                        const isFilled = (r === 0 && c === 1) ? 1 : (r === 4 && c === 3) ? 0 : (bit === 1 ? 1 : 0);
+                        row.push(isFilled);
+                    }
+                    grid.push(row);
+                }
+                CARD_PATTERNS[cardNum] = grid;
+            }
+        }
+        buildCardLookupTable();
+
+        // Xoay ma trận 5x5 90 độ theo chiều kim đồng hồ
+        function rotateGridCW(grid) {
+            const res = Array.from({ length: 5 }, () => Array(5).fill(0));
+            for (let r = 0; r < 5; r++) {
+                for (let c = 0; c < 5; c++) {
+                    res[c][4 - r] = grid[r][c];
+                }
+            }
+            return res;
+        }
+
+        // So khớp ma trận 5x5 đọc được từ Camera với 60 thẻ x 4 hướng xoay (A, B, C, D)
+        function matchMatrixToCard(sampledGrid) {
+            // Orientation mapping:
+            // 0 CW rotations -> A ở trên cùng
+            // 1 CW rotation (90° CW) -> D ở trên cùng
+            // 2 CW rotations (180°) -> C ở trên cùng
+            // 3 CW rotations (270° CW / 90° CCW) -> B ở trên cùng
+            const dirLabels = ['A', 'D', 'C', 'B'];
+            let bestMatch = null;
+            let bestScore = 0;
+
+            for (let cardNum = 1; cardNum <= 60; cardNum++) {
+                let pattern = CARD_PATTERNS[cardNum];
+                for (let rot = 0; rot < 4; rot++) {
+                    let matches = 0;
+                    for (let r = 0; r < 5; r++) {
+                        for (let c = 0; c < 5; c++) {
+                            if (sampledGrid[r][c] === pattern[r][c]) matches++;
+                        }
+                    }
+                    if (matches > bestScore) {
+                        bestScore = matches;
+                        bestMatch = { cardNumber: cardNum, option: dirLabels[rot], confidence: matches / 25 };
+                    }
+                    pattern = rotateGridCW(pattern);
+                }
+            }
+            // Ngưỡng khớp >= 22/25 ô (88%) để chống nhận diện nhầm
+            return (bestMatch && bestScore >= 22) ? bestMatch : null;
+        }
+
+        /**
+         * 2. XỬ LÝ CAMERA & THỊ GIÁC MÁY TÍNH QUÉT THẺ THỜI GIAN THỰC
+         */
+        let videoEl = document.getElementById('camera-video');
+        let cvCanvas = document.getElementById('cv-canvas');
+        let cvCtx = cvCanvas.getContext('2d', { willReadFrequently: true });
+        let streamRef = null;
+        let autoScanEnabled = true;
+        let torchOn = false;
+        let lastDetectedCooldown = {};
+        let totalScannedSession = 0;
+        let syncedStudents = [];
+
+        async function initCamera() {
+            try {
+                streamRef = await navigator.mediaDevices.getUserMedia({
+                    video: {
+                        facingMode: { ideal: 'environment' },
+                        width: { ideal: 1280 },
+                        height: { ideal: 720 }
+                    },
+                    audio: false
+                });
+                videoEl.srcObject = streamRef;
+                await videoEl.play();
+                document.getElementById('camera-start-overlay').classList.add('hidden');
+                requestAnimationFrame(processCameraFrame);
+            } catch (err) {
+                alert('Không thể mở Camera! Hãy cấp quyền Camera cho trình duyệt hoặc mở trang qua HTTPS / Localhost.');
+            }
+        }
+
+        async function toggleTorch() {
+            if (!streamRef) return;
+            const track = streamRef.getVideoTracks()[0];
+            const caps = track.getCapabilities ? track.getCapabilities() : {};
+            if (!caps.torch) {
+                alert('Thiết bị hoặc trình duyệt này không hỗ trợ bật đèn Flash từ web.');
+                return;
+            }
+            torchOn = !torchOn;
+            await track.applyConstraints({ advanced: [{ torch: torchOn }] });
+            document.getElementById('btn-torch').classList.toggle('bg-amber-500', torchOn);
+        }
+
+        function toggleAutoScan() {
+            autoScanEnabled = !autoScanEnabled;
+            const btn = document.getElementById('btn-autoscan');
+            btn.classList.toggle('bg-emerald-600/90', autoScanEnabled);
+            btn.classList.toggle('bg-slate-700', !autoScanEnabled);
+        }
+
+        function processCameraFrame() {
+            if (streamRef && autoScanEnabled && videoEl.readyState === videoEl.HAVE_ENOUGH_DATA) {
+                const vw = videoEl.videoWidth;
+                const vh = videoEl.videoHeight;
+                const size = Math.min(vw, vh) * 0.55;
+                const sx = (vw - size) / 2;
+                const sy = (vh - size) / 2;
+
+                cvCanvas.width = 100;
+                cvCanvas.height = 100;
+                cvCtx.drawImage(videoEl, sx, sy, size, size, 0, 0, 100, 100);
+
+                // Vùng ma trận trung tâm chiếm 114/200 = 57% kích thước thẻ vuông
+                const imgData = cvCtx.getImageData(21, 21, 58, 58).data;
+                let sumLum = 0;
+                const lumGrid = new Float32Array(58 * 58);
+
+                for (let i = 0; i < 58 * 58; i++) {
+                    const r = imgData[i * 4];
+                    const g = imgData[i * 4 + 1];
+                    const b = imgData[i * 4 + 2];
+                    const lum = 0.299 * r + 0.587 * g + 0.114 * b;
+                    lumGrid[i] = lum;
+                    sumLum += lum;
+                }
+                const avgLum = sumLum / (58 * 58);
+
+                // Lấy mẫu 5x5 ô vuông ở tâm mỗi cell
+                const cellStep = 58 / 5;
+                const sampled = [];
+                for (let r = 0; r < 5; r++) {
+                    const row = [];
+                    for (let c = 0; c < 5; c++) {
+                        const cx = Math.floor((c + 0.5) * cellStep);
+                        const cy = Math.floor((r + 0.5) * cellStep);
+                        const lumVal = lumGrid[cy * 58 + cx];
+                        // Ô đen có độ sáng thấp hơn trung bình
+                        row.push(lumVal < avgLum * 0.88 ? 1 : 0);
+                    }
+                    sampled.push(row);
+                }
+
+                const result = matchMatrixToCard(sampled);
+                if (result) {
+                    const now = Date.now();
+                    const key = `${result.cardNumber}_${result.option}`;
+                    if (!lastDetectedCooldown[key] || now - lastDetectedCooldown[key] > 2200) {
+                        lastDetectedCooldown[key] = now;
+                        triggerHapticAndSound();
+                        sendScanResult(result.cardNumber, result.option, 'camera');
+                    }
+                }
+            }
+            requestAnimationFrame(processCameraFrame);
+        }
+
+        function triggerHapticAndSound() {
+            if (navigator.vibrate) navigator.vibrate(70);
+            try {
+                const ctx = new (window.AudioContext || window.webkitAudioContext)();
+                const osc = ctx.createOscillator();
+                const gain = ctx.createGain();
+                osc.type = 'sine';
+                osc.frequency.value = 880;
+                gain.gain.value = 0.08;
+                osc.connect(gain);
+                gain.connect(ctx.destination);
+                osc.start();
+                osc.stop(ctx.currentTime + 0.09);
+            } catch (e) {}
+        }
+
+        /**
+         * 3. ĐỒNG BỘ DỮ LIỆU VỚI FILE index.html (QUA PEERJS WEBRTC + BROADCASTCHANNEL + LOCALSTORAGE)
+         */
+        const PEER_CONFIG = {
+            debug: 1,
+            config: {
+                iceServers: [
+                    { urls: 'stun:stun.l.google.com:19302' },
+                    { urls: 'stun:stun1.l.google.com:19302' }
+                ]
+            }
+        };
+
+        let peer = null;
+        let hostConn = null;
+        let connectTimeoutTimer = null;
+        const bc = ('BroadcastChannel' in window) ? new BroadcastChannel('mathplickers_sync') : null;
+
+        function populateStudentDropdown(list = []) {
+            const sel = document.getElementById('manual-card-select');
+            if (list.length > 0) {
+                sel.innerHTML = list.map(s => `<option value="${s.cardNumber}">Thẻ #${s.cardNumber} - ${s.name}</option>`).join('');
+            } else {
+                let html = '';
+                for (let i = 1; i <= 60; i++) {
+                    html += `<option value="${i}">Thẻ số #${i}</option>`;
+                }
+                sel.innerHTML = html;
+            }
+        }
+        populateStudentDropdown();
+
+        function getSelectedCardNum() {
+            return parseInt(document.getElementById('manual-card-select').value, 10) || 1;
+        }
+
+        function sendScanResult(cardNumber, option, source = 'camera') {
+            const payload = {
+                type: 'PLICKERS_SCAN',
+                cardNumber: cardNumber,
+                option: option,
+                source: source,
+                timestamp: Date.now()
+            };
+
+            if (hostConn && hostConn.open) {
+                hostConn.send(payload);
+            }
+            if (bc) bc.postMessage(payload);
+            try {
+                localStorage.setItem('mathplickers_remote_scan', JSON.stringify(payload));
+            } catch (e) {}
+
+            totalScannedSession++;
+            document.getElementById('scanned-badge').textContent = `Đã quét: ${totalScannedSession}`;
+
+            const stObj = syncedStudents.find(s => s.cardNumber === cardNumber);
+            const displayName = stObj ? stObj.name : `Thẻ #${cardNumber}`;
+
+            const pill = document.getElementById('live-detect-pill');
+            pill.textContent = `✓ ${displayName} → Đáp án ${option}`;
+            pill.classList.remove('hidden');
+            clearTimeout(pill._timer);
+            pill._timer = setTimeout(() => pill.classList.add('hidden'), 2000);
+
+            const bar = document.getElementById('recent-scans-bar');
+            if (totalScannedSession === 1) bar.innerHTML = '';
+            const tag = document.createElement('span');
+            tag.className = 'px-2.5 py-1 rounded-lg bg-emerald-950 border border-emerald-700 text-emerald-300 font-bold shrink-0';
+            tag.textContent = `#${cardNumber}: ${option}`;
+            bar.prepend(tag);
+        }
+
+        function openPairModal() {
+            const modal = document.getElementById('pair-modal');
+            modal.classList.remove('hidden');
+            modal.classList.add('flex');
+            const savedRoom = localStorage.getItem('mathplickers_last_room');
+            if (savedRoom) document.getElementById('room-code-input').value = savedRoom;
+            setTimeout(() => document.getElementById('room-code-input').focus(), 100);
+        }
+
+        function closePairModal() {
+            const modal = document.getElementById('pair-modal');
+            modal.classList.add('hidden');
+            modal.classList.remove('flex');
+        }
+
+        function connectToHostRoom() {
+            const rawInput = document.getElementById('room-code-input').value.trim().toUpperCase();
+            if (!rawInput) {
+                alert('Vui lòng nhập mã phòng hiển thị trên máy tính (ví dụ: MP-4829)!');
+                return;
+            }
+            if (typeof Peer === 'undefined') {
+                alert('Không tải được thư viện kết nối PeerJS. Vui lòng kiểm tra kết nối Internet và tải lại trang!');
+                return;
+            }
+
+            const cleanCode = rawInput.replace(/[^A-Z0-9-]/g, '');
+            const displayRoomCode = cleanCode.startsWith('MP-') ? cleanCode : `MP-${cleanCode}`;
+            const targetPeerId = `MATHPLICKERS-VN-${displayRoomCode}`;
+
+            localStorage.setItem('mathplickers_last_room', displayRoomCode);
+            closePairModal();
+            updateConnStatus('connecting', `Đang kết nối ${displayRoomCode}...`);
+
+            if (connectTimeoutTimer) clearTimeout(connectTimeoutTimer);
+            if (peer) {
+                try { peer.destroy(); } catch (e) {}
+                peer = null;
+            }
+
+            peer = new Peer(PEER_CONFIG);
+
+            connectTimeoutTimer = setTimeout(() => {
+                if (!hostConn || !hostConn.open) {
+                    updateConnStatus('disconnected', `Quá hạn kết nối (${displayRoomCode})`);
+                }
+            }, 12000);
+
+            peer.on('open', () => {
+                hostConn = peer.connect(targetPeerId, { reliable: true });
+                hostConn.on('open', () => {
+                    clearTimeout(connectTimeoutTimer);
+                    updateConnStatus('connected', `Đã nối máy chiếu (${displayRoomCode})`);
+                    document.getElementById('pair-btn-label').textContent = displayRoomCode;
+                    hostConn.send({ type: 'REQUEST_STATE' });
+                });
+                hostConn.on('data', (msg) => {
+                    if (msg && msg.type === 'HOST_STATE') {
+                        if (msg.questionLabel) {
+                            document.getElementById('active-q-title').textContent = msg.questionLabel;
+                        }
+                        if (Array.isArray(msg.students)) {
+                            syncedStudents = msg.students;
+                            populateStudentDropdown(syncedStudents);
+                        }
+                    }
+                });
+                hostConn.on('close', () => {
+                    updateConnStatus('disconnected', 'Mất kết nối máy chiếu');
+                });
+                hostConn.on('error', () => {
+                    clearTimeout(connectTimeoutTimer);
+                    updateConnStatus('disconnected', 'Lỗi truyền dữ liệu tới PC');
+                });
+            });
+
+            peer.on('error', (err) => {
+                clearTimeout(connectTimeoutTimer);
+                const msg = err && err.type === 'peer-unavailable'
+                    ? `Không tìm thấy phòng ${displayRoomCode}`
+                    : 'Lỗi kết nối máy chủ PeerJS';
+                updateConnStatus('disconnected', msg);
+            });
+        }
+
+        function updateConnStatus(state, text) {
+            const el = document.getElementById('conn-status');
+            if (state === 'connected') {
+                el.className = 'text-[11px] text-emerald-400 flex items-center gap-1.5 font-bold';
+                el.innerHTML = `<span class="w-2 h-2 rounded-full bg-emerald-400"></span><span>${text}</span>`;
+            } else if (state === 'connecting') {
+                el.className = 'text-[11px] text-amber-300 flex items-center gap-1.5 font-semibold';
+                el.innerHTML = `<span class="w-2 h-2 rounded-full bg-amber-400 animate-ping"></span><span>${text}</span>`;
+            } else {
+                el.className = 'text-[11px] text-rose-400 flex items-center gap-1.5 font-semibold';
+                el.innerHTML = `<span class="w-2 h-2 rounded-full bg-rose-500"></span><span>${text}</span>`;
+            }
+        }
+
+        // Lắng nghe đồng bộ nội bộ nếu chạy trên cùng thiết bị
+        if (bc) {
+            bc.onmessage = (e) => {
+                if (e.data?.type === 'HOST_STATE') {
+                    document.getElementById('active-q-title').textContent = e.data.questionLabel || 'Đang chiếu';
+                    if (e.data.students) {
+                        syncedStudents = e.data.students;
+                        populateStudentDropdown(syncedStudents);
+                    }
+                }
+            };
+        }
+
+        // Đăng ký Service Worker & Nút cài đặt PWA lên màn hình chính điện thoại
+        if ('serviceWorker' in navigator) {
+            navigator.serviceWorker.register('sw.js').catch(() => {});
+        }
+        let deferredPrompt;
+        window.addEventListener('beforeinstallprompt', (e) => {
+            e.preventDefault();
+            deferredPrompt = e;
+            const btn = document.getElementById('btn-install-pwa');
+            btn.classList.remove('hidden');
+            btn.onclick = async () => {
+                deferredPrompt.prompt();
+                await deferredPrompt.userChoice;
+                btn.classList.add('hidden');
+            };
+        });
+
+        // Tự động kết nối nếu mở qua link QR có tham số ?room=MP-XXXX
+        window.addEventListener('DOMContentLoaded', () => {
+            const params = new URLSearchParams(window.location.search);
+            const roomParam = params.get('room');
+            if (roomParam) {
+                document.getElementById('room-code-input').value = roomParam;
+                setTimeout(connectToHostRoom, 500);
+            }
+        });
+    </script>
+</body>
+</html>
